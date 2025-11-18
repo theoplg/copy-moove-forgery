@@ -242,6 +242,8 @@ img1 = cv.imread("images/lena_modif_2.png", cv.IMREAD_COLOR)
 # img1 = cv.imread("images/lena_modif.png", cv.IMREAD_COLOR)
 # img1 = cv.imread("images/cure_fr_modif.png", cv.IMREAD_COLOR)
 
+# img1 = cv.imread("images/ID_RECT_MODIF.jpg", cv.IMREAD_COLOR)
+
 
 # img1 = cv.imread("images/trainspotting_1.png", cv.IMREAD_GRAYSCALE)
 # img2 = cv.imread("images/trainspotting_2.png", cv.IMREAD_GRAYSCALE)
@@ -258,15 +260,194 @@ img1 = cv.imread("images/lena_modif_2.png", cv.IMREAD_COLOR)
 offsets = patchmatch(img1, img1, 4, init_off(img1), nb_iters=5)[0]
 # offsets = init_off(img1)
 
-
-offsetsmap = make_offset_bgr_from_field(offsets)
-plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
-plt.axis("off")
-plt.show()
+# offsetsmap = make_offset_bgr_from_field(offsets)
+# # offsetsmap_s = make_offset_bgr_from_field(offsets_s)
+# plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
+# plt.axis("off")
+# plt.show()
+# plt.imshow(cv.cvtColor(offsetsmap_s, cv.COLOR_BGR2RGB))
+# plt.axis("off")
+# plt.show()
 
 # new_img = remap(img, offsets, 3)
 # cv.imshow("image", new_img)
 # cv.waitKey(0)
 # cv.destroyAllWindows()
 
+# --- POST-TRAITEMENT DU CHAMP DE DEPLACEMENTS POUR OBTENIR UN MASQUE ---
 
+from scipy.ndimage import median_filter
+
+def median_filter_offsets(offsets, radius=4):
+    k = 2 * radius + 1
+    dx = offsets[..., 0]
+    dy = offsets[..., 1]
+
+    dx_f = median_filter(dx, size=k)
+    dy_f = median_filter(dy, size=k)
+
+    return np.stack((dx_f, dy_f), axis=-1)
+
+
+
+def compute_error_map_translation(offsets, rho_e=6):
+    """
+    Version simplifiée de l'error filter de l'article:
+    on suppose que localement le déplacement est une translation pure.
+    Pour chaque fenêtre, on mesure la variance des offsets autour de leur moyenne.
+
+    rho_e = rayon de la fenêtre (ρ_e dans l'article).
+    """
+    H, W, _ = offsets.shape
+    dx = offsets[..., 0].astype(np.float32)
+    dy = offsets[..., 1].astype(np.float32)
+
+    error = np.full((H, W), np.nan, dtype=np.float32)
+
+    for i in range(rho_e, H - rho_e):
+        for j in range(rho_e, W - rho_e):
+            dx_win = dx[i - rho_e:i + rho_e + 1, j - rho_e:j + rho_e + 1]
+            dy_win = dy[i - rho_e:i + rho_e + 1, j - rho_e:j + rho_e + 1]
+
+            mdx = dx_win.mean()
+            mdy = dy_win.mean()
+
+            dev2 = (dx_win - mdx) ** 2 + (dy_win - mdy) ** 2
+            error[i, j] = dev2.mean()
+
+    # pour les bords (où on n'a pas de fenêtre complète), on met une grosse erreur
+    finite = np.isfinite(error)
+    if np.any(finite):
+        max_e = np.nanmax(error[finite])
+        error = np.nan_to_num(error, nan=max_e)
+    else:
+        error[:] = 0.0
+
+    return error
+
+
+def size_filter(mask, min_size=500):
+    """
+    Supprime les composantes connexes plus petites que min_size.
+    """
+    num_labels, labels, stats, _ = cv.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=4
+    )
+    # stats: [label, CC_STAT_LEFT, CC_STAT_TOP, CC_STAT_WIDTH, CC_STAT_HEIGHT, CC_STAT_AREA]
+    filtered = mask.copy()
+    for lab in range(1, num_labels):  # 0 = fond
+        area = stats[lab, cv.CC_STAT_AREA]
+        if area < min_size:
+            filtered[labels == lab] = 0
+    return filtered
+
+
+def detection_mask_from_offsets(offsets,
+                                rho_m=4,    # rayon filtre médian
+                                rho_e=6,    # rayon fenêtre pour error map
+                                tau_error=1e-3,  # seuil erreur (si None: auto)
+                                tau_disp=5,      # seuil min norme déplacement
+                                min_size=1000):   # taille minimale CC
+    """
+    Pipeline inspiré de l'article:
+      1) median filter sur D
+      2) error map par cohérence de translation
+      3) seuillage de l'error map
+      4) filtre sur la norme du déplacement
+      5) filtre de taille (small components)
+    Retourne (mask_binaire_uint8, error_map)
+    """
+    # 1) filtrage médian du champ de déplacement
+    offsets_f = median_filter_offsets(offsets, radius=rho_m)
+
+    # 2) error map
+    err = compute_error_map_translation(offsets_f, rho_e=rho_e)
+
+    # 3) choix du seuil d'erreur
+    if tau_error is None:
+        finite = np.isfinite(err)
+        # on garde par exemple les 20% plus petites erreurs
+        tau_error = np.percentile(err[finite], 20.0)
+
+    # 4) masque: faible erreur + déplacement "suffisant"
+    mag = np.sqrt(offsets_f[..., 0]**2 + offsets_f[..., 1]**2)
+    mask = (err < tau_error) & (mag > tau_disp)
+
+    mask = mask.astype(np.uint8) * 255
+
+    # 5) filtre de taille
+    mask = size_filter(mask, min_size=min_size)
+
+    return mask, err
+
+
+# --- VISU DISPLACEMENT MAP (déjà dans ton script, au cas où) ---
+offsetsmap = make_offset_bgr_from_field(offsets)
+plt.figure()
+plt.title("Displacement map (visualisation RGB)")
+plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
+plt.axis("off")
+
+# --- CALCUL DU MASQUE BINAIRE DE FORGERIE ---
+mask, error_map = detection_mask_from_offsets(
+    offsets,
+    rho_m=4,
+    rho_e=6,
+    tau_error=None,  # laisse auto pour commencer
+    tau_disp=5,      # seuil min norme offset
+    min_size=500     # supprime petits blobs
+)
+
+mask = cv.dilate(mask, kernel=np.ones((11,11), dtype=np.uint8), iterations=1)
+
+# Visualisation de l'error map (optionnel, comme dans l'article)
+plt.figure()
+plt.title("Error map")
+plt.imshow(error_map, cmap="hot")
+plt.colorbar()
+
+# Visualisation du mask binaire
+plt.figure()
+plt.title("Mask de détection (binaire)")
+plt.imshow(mask, cmap="gray")
+plt.axis("off")
+
+def overlay_mask_on_image(img, mask, alpha=0.5):
+    """
+    img  : image originale (BGR ou RGB)
+    mask : masque binaire uint8 (0 ou 255)
+    alpha: transparence du rouge (0.0 = rien, 1.0 = rouge opaque)
+    Retourne img_overlaid de même taille.
+    """
+
+    # S'assurer que mask est binaire {0,1}
+    m = (mask > 0).astype(np.uint8)
+
+    # Créer un calque rouge
+    overlay = np.zeros_like(img, dtype=np.uint8)
+
+    # Si l'image est BGR (OpenCV), on met rouge = (0,0,255)
+    # Si elle est RGB (matplotlib), c'est de toute façon proche visuellement
+    overlay[..., 2] = 255  # canal rouge
+
+    # Appliquer alpha blending uniquement où m == 1
+    img_float = img.astype(np.float32)
+    overlay_float = overlay.astype(np.float32)
+
+    img_float[m == 1] = (
+        (1 - alpha) * img_float[m == 1] +
+         alpha      * overlay_float[m == 1]
+    )
+
+    return img_float.astype(np.uint8)
+
+# --- Overlay rouge sur l'image ---
+img_rgb = cv.cvtColor(img1, cv.COLOR_BGR2RGB)  # pour afficher avec matplotlib
+
+img_overlay = overlay_mask_on_image(img_rgb, mask, alpha=0.5)
+
+plt.figure()
+plt.title("Detection Overlay (rouge transparent)")
+plt.imshow(img_overlay)
+plt.axis("off")
+plt.show()
