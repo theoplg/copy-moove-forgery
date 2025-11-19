@@ -393,14 +393,14 @@ mask, error_map = detection_mask_from_offsets(
     offsets,
     rho_m=4,
     rho_e=6,
-    tau_error=None,  # laisse auto pour commencer
+    tau_error=None,  # seuil d'erreur auto
     tau_disp=5,      # seuil min norme offset
     min_size=500     # supprime petits blobs
 )
 
 mask = cv.dilate(mask, kernel=np.ones((11,11), dtype=np.uint8), iterations=1)
 
-# Visualisation de l'error map (optionnel, comme dans l'article)
+# Visualisation de l'error map 
 plt.figure()
 plt.title("Error map")
 plt.imshow(error_map, cmap="hot")

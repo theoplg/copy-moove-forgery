@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-import skimage.morphology as morpho
+
 
 def copy_im(img, r):
     return cv.copyMakeBorder(img, r, r, r, r, borderType=cv.BORDER_CONSTANT, value=0) #on crée un copie de l'image de base pour éviter les problèmes de bord
