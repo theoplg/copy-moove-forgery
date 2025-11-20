@@ -1,8 +1,7 @@
 import cv2 as cv
 import numpy as np
 import math
-import matplotlib.pyplot as plt
-
+import matplotlib as plt
 
 def copy_im(img, r):
     return cv.copyMakeBorder(img, r, r, r, r, borderType=cv.BORDER_CONSTANT, value=0) #on crée un copie de l'image de base pour éviter les problèmes de bord
@@ -24,7 +23,7 @@ def init_off(img):
             offsets[i, j] = (np.random.randint(0, W) - j, np.random.randint(0, H) - i) # position aléatoire dans l'image B
     return offsets
 
-R_forbidden = 4
+R_forbidden = 40
 R2 = R_forbidden * R_forbidden
 
 # fonction pour vérifier si un offset est dans la zone interdite
@@ -235,165 +234,226 @@ def make_offset_bgr_from_field(offsets):
 
     return (img * 255.0).clip(0, 255).astype(np.uint8)
 
-# Map des erreurs : là où il y a copier-coller, les offsets sont cohérents localement (presque la même translation sur une zone).
-def compute_error_map(offsets, win=7):
+
+
+scale = .5
+img1 = cv.imread("images/eleph.jpeg", cv.IMREAD_COLOR)
+
+img1 = cv.resize(img1, None, fx=scale, fy=scale, interpolation=cv.INTER_LINEAR)
+
+
+
+a  = patchmatch(img1, img1, 4, init_off(img1), nb_iters=5)
+offsets = a[0]
+dist_map = a[1]
+
+# offsets = init_off(img1)
+
+
+
+# --- POST-TRAITEMENT DU CHAMP DE DEPLACEMENTS POUR OBTENIR UN MASQUE ---
+
+from scipy.ndimage import median_filter
+
+def median_filter_offsets(offsets, radius=4):
+    k = 2 * radius + 1
+    dx = offsets[..., 0]
+    dy = offsets[..., 1]
+
+    dx_f = median_filter(dx, size=k)
+    dy_f = median_filter(dy, size=k)
+
+    return np.stack((dx_f, dy_f), axis=-1)
+
+
+
+def compute_error_map_translation(offsets, rho_e=6):
+    """
+    Version simplifiée de l'error filter de l'article:
+    on suppose que localement le déplacement est une translation pure.
+    Pour chaque fenêtre, on mesure la variance des offsets autour de leur moyenne.
+
+    rho_e = rayon de la fenêtre (ρ_e dans l'article).
+    """
+    H, W, _ = offsets.shape
     dx = offsets[..., 0].astype(np.float32)
     dy = offsets[..., 1].astype(np.float32)
 
-    # moyennes locales
-    k = (win, win)
-    mean_dx = cv.boxFilter(dx, ddepth=-1, ksize=k, normalize=True)
-    mean_dy = cv.boxFilter(dy, ddepth=-1, ksize=k, normalize=True)
+    error = np.full((H, W), np.nan, dtype=np.float32)
 
-    # moyennes des carrés
-    mean_dx2 = cv.boxFilter(dx * dx, ddepth=-1, ksize=k, normalize=True)
-    mean_dy2 = cv.boxFilter(dy * dy, ddepth=-1, ksize=k, normalize=True)
+    for i in range(rho_e, H - rho_e):
+        for j in range(rho_e, W - rho_e):
+            dx_win = dx[i - rho_e:i + rho_e + 1, j - rho_e:j + rho_e + 1]
+            dy_win = dy[i - rho_e:i + rho_e + 1, j - rho_e:j + rho_e + 1]
 
-    var_dx = mean_dx2 - mean_dx * mean_dx
-    var_dy = mean_dy2 - mean_dy * mean_dy
+            mdx = dx_win.mean()
+            mdy = dy_win.mean()
 
-    error_map = var_dx + var_dy   # scalar: "incohérence" locale
-    return error_map
+            dev2 = (dx_win - mdx) ** 2 + (dy_win - mdy) ** 2
+            error[i, j] = dev2.mean()
 
-# Mask initial : garder les pixels où error_map est dans les α % plus faibles
-def build_initial_mask(offsets, distances, error_map,
-                       R2_forbidden=R2,
-                       max_dist_quantile=0.9,
-                       err_quantile=0.3,
-                       min_disp=10,
-                       min_region_size=50):
+    # pour les bords (où on n'a pas de fenêtre complète), on met une grosse erreur
+    finite = np.isfinite(error)
+    if np.any(finite):
+        max_e = np.nanmax(error[finite])
+        error = np.nan_to_num(error, nan=max_e)
+    else:
+        error[:] = 0.0
+
+    return error
+
+
+def size_filter(mask, min_size=500):
+    """
+    Supprime les composantes connexes plus petites que min_size.
+    """
+    num_labels, labels, stats, _ = cv.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=4
+    )
+    # stats: [label, CC_STAT_LEFT, CC_STAT_TOP, CC_STAT_WIDTH, CC_STAT_HEIGHT, CC_STAT_AREA]
+    filtered = mask.copy()
+    for lab in range(1, num_labels):  # 0 = fond
+        area = stats[lab, cv.CC_STAT_AREA]
+        if area < min_size:
+            filtered[labels == lab] = 0
+    return filtered
+
+def filter_by_global_frequency(offsets, min_count=500):
     H, W = offsets.shape[:2]
-    dx = offsets[..., 0].astype(np.float32)
-    dy = offsets[..., 1].astype(np.float32)
+    # On aplatit le tableau pour avoir une liste de vecteurs (N, 2)
+    vecs = offsets.reshape(-1, 2)
+    
+    # Astuce numpy pour compter les occurrences de chaque vecteur (dx, dy)
+    # Cela peut prendre 1 ou 2 secondes
+    unique_vecs, inverse_indices, counts = np.unique(vecs, axis=0, return_counts=True, return_inverse=True)
+    
+    # On crée une carte où chaque pixel contient le nombre de fois que son vecteur déplacement apparaît dans toute l'image
+    freq_map = counts[inverse_indices].reshape(H, W)
+    
+    # On ne garde que les pixels dont le vecteur est très fréquent
+    mask_freq = (freq_map > min_count)
+    
+    print(f"Vecteurs uniques trouvés : {len(unique_vecs)}")
+    print(f"Pixels conservés par fréquence globale : {np.count_nonzero(mask_freq)}")
+    
+    return mask_freq
 
-    # 1) pixels avec distance raisonnable
-    valid = np.isfinite(distances)
-    if not valid.any():
-        return np.zeros((H, W), dtype=bool)
+def detection_mask_from_offsets(offsets, dist_map, patch_r,
+                                rho_m=4,    
+                                rho_e=6,    
+                                tau_error=200,
+                                tau_disp=10,     
+                                min_size=500,
+                                max_rmse=15,    # Un peu plus permissif
+                                min_global_count=800): # NOUVEAU PARAMETRE
 
-    thr_dist = np.quantile(distances[valid], max_dist_quantile)
-    valid &= (distances <= thr_dist)
+    # 1) Filtrage médian (Nettoie le bruit poivre et sel)
+    offsets_f = median_filter_offsets(offsets, radius=rho_m)
 
-    # 2) en dehors de la zone interdite
-    valid &= (dx * dx + dy * dy) >= R2_forbidden
+    # 2) NOUVEAU : Filtre de Fréquence Globale (Tue le bruit de fond)
+    # C'est l'étape la plus importante pour votre problème
+    freq_mask = filter_by_global_frequency(offsets_f, min_count=min_global_count)
 
-    # 3) variance locale faible (error map petite)
-    thr_err = np.quantile(error_map[valid], err_quantile)
-    valid &= (error_map <= thr_err)
+    # 3) Error map (Cohérence locale)
+    err = compute_error_map_translation(offsets_f, rho_e=rho_e)
+    consistency_mask = (err < tau_error)
 
-    # 4) déplacement assez grand
-    disp = np.sqrt(dx * dx + dy * dy)
-    valid &= (disp >= min_disp)
+    # 4) Qualité visuelle (RMSE)
+    patch_area = ((2 * patch_r + 1) ** 2) * 3
+    rmse_map = np.sqrt(dist_map / patch_area)
+    quality_mask = (rmse_map < max_rmse)
+    
+    # 5) Déplacement minimum
+    mag = np.sqrt(offsets_f[..., 0]**2 + offsets_f[..., 1]**2)
+    displacement_mask = (mag > tau_disp)
 
-    # 5) garder seulement les grosses composantes
-    mask_u8 = valid.astype(np.uint8)
-    n_lab, lab_img = cv.connectedComponents(mask_u8)
-    mask_init = np.zeros((H, W), dtype=bool)
-    for lab in range(1, n_lab):
-        comp = (lab_img == lab)
-        if comp.sum() >= min_region_size:
-            mask_init[comp] = True
-    print("nb pixels totaux:", H*W)
-    print("nb distances finies:", np.isfinite(distances).sum())
-    print("après seuil distance:", valid.sum())
-    print("après rayon interdit:", valid.sum())
-    print("après seuil error_map:", valid.sum())
-    print("après min_disp:", valid.sum())
-    print("après composantes connexes:", mask_init.sum())
+    # --- COMBINAISON STRATEGIQUE ---
+    # Si un pixel fait partie d'un groupe massif (freq_mask), est cohérent (consistency),
+    # se déplace assez loin (disp), et ressemble à sa source (quality).
+    mask = freq_mask & consistency_mask & displacement_mask & quality_mask
 
-    return mask_init
+    mask = mask.astype(np.uint8) * 255
+    
+    # 6) Nettoyage final des petits ilots
+    mask = size_filter(mask, min_size=min_size)
 
-
-
-# vérifier la symétrie des correspondances (bidirectionnelle) nettoyer morphologiquement.
-def refine_mask_symmetry(mask_init, offsets,
-                         max_sym_diff=2.0):
-    H, W = offsets.shape[:2]
-    dx = offsets[..., 0].astype(np.int32)
-    dy = offsets[..., 1].astype(np.int32)
-
-    mask_final = np.zeros_like(mask_init, dtype=bool)
-
-    ys, xs = np.where(mask_init)
-    for y, x in zip(ys, xs):
-        ox = dx[y, x]
-        oy = dy[y, x]
-        y2 = y + oy
-        x2 = x + ox
-        if not (0 <= y2 < H and 0 <= x2 < W):
-            continue
-
-        ox2 = dx[y2, x2]
-        oy2 = dy[y2, x2]
-
-        # on veut (ox2, oy2) ≈ (-ox, -oy)
-        sym_err = math.sqrt((ox2 + ox)**2 + (oy2 + oy)**2)
-        if sym_err <= max_sym_diff:
-            mask_final[y, x] = True
-
-    # nettoyage morphologique
-    kernel = np.ones((5, 5), np.uint8)
-    m_u8 = mask_final.astype(np.uint8)
-    m_u8 = cv.morphologyEx(m_u8, cv.MORPH_CLOSE, kernel)
-    m_u8 = cv.morphologyEx(m_u8, cv.MORPH_OPEN, kernel)
-    mask_final = m_u8.astype(bool)
-
-    return mask_final
+    return mask, err
 
 
+# --- VISU DISPLACEMENT MAP (déjà dans ton script, au cas où) ---
+offsetsmap = make_offset_bgr_from_field(offsets)
+plt.figure()
+plt.title("Displacement map (visualisation RGB)")
+plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
+plt.axis("off")
 
-if __name__ == "__main__":
-    scale = .5
+# --- CALCUL DU MASQUE BINAIRE DE FORGERIE ---
+# --- EXECUTION ---
+# Assurez-vous d'avoir R_forbidden = 40 en haut du script
 
-    img1 = cv.imread("images/lena_modif_2.png", cv.IMREAD_COLOR)
+mask, error_map = detection_mask_from_offsets(
+    offsets,
+    dist_map,  
+    patch_r=4,
+    rho_m=4,
+    rho_e=6,
+    tau_error=300,        # On peut être large car le filtre de fréquence fera le tri
+    tau_disp=20,          # On ignore les petits mouvements de texture
+    min_size=500,
+    max_rmse=15,          # Tolérance couleur
+    min_global_count=300 # Il faut qu'au moins 1000 pixels (un bloc de 32x32) bougent pareil
+)
 
-    # Obtention des offsets et distances
-    offsets, distances = patchmatch(img1, img1, 4, init_off(img1), nb_iters=5)
+mask = cv.dilate(mask, kernel=np.ones((11,11), dtype=np.uint8), iterations=1)
 
+# Visualisation de l'error map 
+plt.figure()
+plt.title("Error map")
+plt.imshow(error_map, cmap="hot")
+plt.colorbar()
 
-    # Affichage debug des valeurs
-    print("Shape des offsets:", offsets.shape)
-    print("Min/Max des offsets:", np.min(offsets), np.max(offsets))
+# Visualisation du mask binaire
+plt.figure()
+plt.title("Mask de détection (binaire)")
+plt.imshow(mask, cmap="gray")
+plt.axis("off")
 
-    # 1. Affichage de l'image originale
-    plt.figure(figsize=(15, 5))
+def overlay_mask_on_image(img, mask, alpha=0.5):
+    """
+    img  : image originale (BGR ou RGB)
+    mask : masque binaire uint8 (0 ou 255)
+    alpha: transparence du rouge (0.0 = rien, 1.0 = rouge opaque)
+    Retourne img_overlaid de même taille.
+    """
 
-    plt.subplot(141)
-    plt.imshow(cv.cvtColor(img1, cv.COLOR_BGR2RGB))
-    plt.title('Image originale')
-    plt.axis('off')
+    # S'assurer que mask est binaire {0,1}
+    m = (mask > 0).astype(np.uint8)
 
-    # 2. Affichage des résultats
-    offsetsmap = make_offset_bgr_from_field(offsets)
-    plt.subplot(142)
-    plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
-    plt.title('Carte des offsets')
-    plt.axis('off')
+    # Créer un calque rouge
+    overlay = np.zeros_like(img, dtype=np.uint8)
 
-    print("Shape de la carte des offsets:", offsetsmap.shape)
-    print("Min/Max de la carte des offsets:", np.min(offsetsmap), np.max(offsetsmap))
+    # Si l'image est BGR (OpenCV), on met rouge = (0,0,255)
+    # Si elle est RGB (matplotlib), c'est de toute façon proche visuellement
+    overlay[..., 2] = 255  # canal rouge
 
-    # Error map
-    error_map = compute_error_map(offsets, win=9)
-    mask_init = build_initial_mask(offsets, distances, error_map)
-    mask_final = refine_mask_symmetry(mask_init, offsets)
+    # Appliquer alpha blending uniquement où m == 1
+    img_float = img.astype(np.float32)
+    overlay_float = overlay.astype(np.float32)
 
-    plt.figure(figsize=(15,4))
+    img_float[m == 1] = (
+        (1 - alpha) * img_float[m == 1] +
+         alpha      * overlay_float[m == 1]
+    )
 
-    plt.subplot(131)
-    plt.imshow(error_map, cmap='jet')
-    plt.title("Error map")
-    plt.axis('off')
+    return img_float.astype(np.uint8)
 
-    plt.subplot(132)
-    plt.imshow(mask_init, cmap='gray')
-    plt.title("Initial detection mask")
-    plt.axis('off')
+# --- Overlay rouge sur l'image ---
+img_rgb = cv.cvtColor(img1, cv.COLOR_BGR2RGB)  # pour afficher avec matplotlib
 
-    plt.subplot(133)
-    plt.imshow(mask_final, cmap='gray')
-    plt.title("Final detection mask")
-    plt.axis('off')
+img_overlay = overlay_mask_on_image(img_rgb, mask, alpha=0.5)
 
-    plt.tight_layout()
-    plt.show()
+plt.figure()
+plt.title("Detection Overlay ")
+plt.imshow(img_overlay)
+plt.axis("off")
+plt.show()
