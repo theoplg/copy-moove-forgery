@@ -5,6 +5,7 @@ from utils import *
 
 
 def main():
+    # remplacer par les images souhaitées
     img1 = load_image("input/lena_modif.png")
     img2 = load_image("input/lena_modif.png")
 

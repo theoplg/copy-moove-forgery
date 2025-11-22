@@ -171,37 +171,39 @@ def patchmatch(im1, im2, r, offsets, nb_iters = 5): # l'argument offset est le d
 
 
 # reconstruction de l'image 2 à partir de l'image 1 et des offsets
-def remap(img1, offsets, r):
-    img2 = np.zeros_like(img1, dtype=float)
-    H, W = img1.shape[:2]
-    weights = np.zeros((H, W), dtype=float)
-    C = 1 if img1.ndim == 2 else img1.shape[2] # gère le cas des images en niveaux de gris et en couleur
+def remap(source, offsets, r):
+    H, W = offsets.shape[:2]
+    C = 1 if source.ndim == 2 else source.shape[2]
+
+    out = np.zeros((H, W, C), np.float32) if C > 1 else np.zeros((H, W), np.float32)
+    wgt = np.zeros((H, W), np.float32)
 
     for i in range(H):
         for j in range(W):
-
-            dx = offsets[i, j, 0]
-            dy = offsets[i, j, 1]
-            i2 = i + dy
-            j2 = j + dx
+            dx, dy = offsets[i, j]
+            cx_src = j + dx
+            cy_src = i + dy
 
             for u in range(-r, r + 1):
                 for v in range(-r, r + 1):
-                    y = i + u
-                    x = j + v
-                    y2 = i2 + u
-                    x2 = j2 + v
+                    y  = i  + v
+                    x  = j  + u
+                    ys = cy_src + v
+                    xs = cx_src + u
 
-                    if (0 <= y < H and 0 <= x < W and 0 <= y2 < H and 0 <= x2 < W):
+                    if 0 <= y < H and 0 <= x < W and 0 <= ys < H and 0 <= xs < W:
                         if C == 1:
-                            img2[y2, x2] += img1[y, x]
+                            out[y, x] += source[ys, xs]
                         else:
-                            img2[y2, x2, :] += img1[y, x, :] # quand c'est une image en couleur il faut gérer les 3 canaux
-                        weights[y2, x2] += 1.0
+                            out[y, x, :] += source[ys, xs, :]
+                        wgt[y, x] += 1.0
 
+    # normalisation
+    wgt = np.maximum(wgt, 1e-8)
     if C == 1:
-        img2 /= np.maximum(weights, 1e-8)
+        out /= wgt
     else:
-        img2 /= np.maximum(weights, 1e-8)[:, :, None] # idem pour les images en couleur, il faut gérer les 3 canaux
-    img2 = np.clip(img2, 0, 255)
-    return img2.astype(np.uint8)
+        out /= wgt[:, :, None]
+
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    return out

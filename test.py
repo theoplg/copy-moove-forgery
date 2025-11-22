@@ -268,13 +268,6 @@ def median_filter_offsets(offsets, radius=4):
 
 
 def compute_error_map_translation(offsets, rho_e=6):
-    """
-    Version simplifiée de l'error filter de l'article:
-    on suppose que localement le déplacement est une translation pure.
-    Pour chaque fenêtre, on mesure la variance des offsets autour de leur moyenne.
-
-    rho_e = rayon de la fenêtre (ρ_e dans l'article).
-    """
     H, W, _ = offsets.shape
     dx = offsets[..., 0].astype(np.float32)
     dy = offsets[..., 1].astype(np.float32)
@@ -304,9 +297,6 @@ def compute_error_map_translation(offsets, rho_e=6):
 
 
 def size_filter(mask, min_size=500):
-    """
-    Supprime les composantes connexes plus petites que min_size.
-    """
     num_labels, labels, stats, _ = cv.connectedComponentsWithStats(
         mask.astype(np.uint8), connectivity=4
     )
