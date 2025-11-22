@@ -1,3 +1,52 @@
+## Installation & Setup
+
+### Prerequisites
+Ensure you have **Python 3** installed.
+
+### Clone the repository
+Clone the project to your local machine:
+
+```bash
+git clone [https://github.com/y4sxk1n/IM01_PROJ.git](https://github.com/y4sxk1n/IM01_PROJ.git)
+cd IM01_PROJ
+```
+
+### Installation
+Install the required dependencies using the provided requirements file:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Usage
+
+To run the copy-move forgery detection, execute the `run_cf_detection.py` script.
+
+### Syntax
+```bash
+python3 run_cf_detection.py <image> [iters]
+```
+
+### Arguments
+* **`<image>`**: Path to the image file you want to analyze.
+* **`[iters]`** *(Optional)*: Number of iterations for the PatchMatch algorithm.
+
+### Examples
+
+**Basic usage:**
+```bash
+python3 run_cf_detection.py images/test_01.jpg
+```
+
+**Specifying iterations:**
+```bash
+python3 run_cf_detection.py images/test_01.jpg 5
+```
+<br>
+<br>
+
 # Automatic Copy-Move Forgery Detection using PatchMatch
 
 ## Authors & Context
