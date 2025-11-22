@@ -235,22 +235,6 @@ def make_offset_bgr_from_field(offsets):
     return (img * 255.0).clip(0, 255).astype(np.uint8)
 
 
-
-scale = .5
-img1 = cv.imread("images/eleph.jpeg", cv.IMREAD_COLOR)
-
-img1 = cv.resize(img1, None, fx=scale, fy=scale, interpolation=cv.INTER_LINEAR)
-
-
-
-a  = patchmatch(img1, img1, 4, init_off(img1), nb_iters=5)
-offsets = a[0]
-dist_map = a[1]
-
-# offsets = init_off(img1)
-
-
-
 # --- POST-TRAITEMENT DU CHAMP DE DEPLACEMENTS POUR OBTENIR UN MASQUE ---
 
 from scipy.ndimage import median_filter
@@ -341,7 +325,7 @@ def detection_mask_from_offsets(offsets, dist_map, patch_r,
     offsets_f = median_filter_offsets(offsets, radius=rho_m)
 
     # 2) NOUVEAU : Filtre de Fréquence Globale (Tue le bruit de fond)
-    # C'est l'étape la plus importante pour votre problème
+    # C'est l'étape la plus importante pour le problème
     freq_mask = filter_by_global_frequency(offsets_f, min_count=min_global_count)
 
     # 3) Error map (Cohérence locale)
@@ -369,81 +353,93 @@ def detection_mask_from_offsets(offsets, dist_map, patch_r,
 
     return mask, err
 
+if __name__ == "__main__":
+    scale = .5
+    img1 = cv.imread("images/mart3.jpeg", cv.IMREAD_COLOR)
 
-# --- VISU DISPLACEMENT MAP (déjà dans ton script, au cas où) ---
-offsetsmap = make_offset_bgr_from_field(offsets)
-plt.figure()
-plt.title("Displacement map (visualisation RGB)")
-plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
-plt.axis("off")
+    img1 = cv.resize(img1, None, fx=scale, fy=scale, interpolation=cv.INTER_LINEAR)
 
-# --- CALCUL DU MASQUE BINAIRE DE FORGERIE ---
-# --- EXECUTION ---
-# Assurez-vous d'avoir R_forbidden = 40 en haut du script
 
-mask, error_map = detection_mask_from_offsets(
-    offsets,
-    dist_map,  
-    patch_r=4,
-    rho_m=4,
-    rho_e=6,
-    tau_error=300,        # On peut être large car le filtre de fréquence fera le tri
-    tau_disp=20,          # On ignore les petits mouvements de texture
-    min_size=500,
-    max_rmse=15,          # Tolérance couleur
-    min_global_count=300 # Il faut qu'au moins 1000 pixels (un bloc de 32x32) bougent pareil
-)
 
-mask = cv.dilate(mask, kernel=np.ones((11,11), dtype=np.uint8), iterations=1)
+    a  = patchmatch(img1, img1, 4, init_off(img1), nb_iters=5)
+    offsets = a[0]
+    dist_map = a[1]
 
-# Visualisation de l'error map 
-plt.figure()
-plt.title("Error map")
-plt.imshow(error_map, cmap="hot")
-plt.colorbar()
+    # offsets = init_off(img1)
+    # --- VISU DISPLACEMENT MAP (déjà dans ton script, au cas où) ---
+    offsetsmap = make_offset_bgr_from_field(offsets)
+    plt.figure()
+    plt.title("Displacement map (visualisation RGB)")
+    plt.imshow(cv.cvtColor(offsetsmap, cv.COLOR_BGR2RGB))
+    plt.axis("off")
 
-# Visualisation du mask binaire
-plt.figure()
-plt.title("Mask de détection (binaire)")
-plt.imshow(mask, cmap="gray")
-plt.axis("off")
+    # --- CALCUL DU MASQUE BINAIRE DE FORGERIE ---
+    # --- EXECUTION ---
+    # Assurez-vous d'avoir R_forbidden = 40 en haut du script
 
-def overlay_mask_on_image(img, mask, alpha=0.5):
-    """
-    img  : image originale (BGR ou RGB)
-    mask : masque binaire uint8 (0 ou 255)
-    alpha: transparence du rouge (0.0 = rien, 1.0 = rouge opaque)
-    Retourne img_overlaid de même taille.
-    """
-
-    # S'assurer que mask est binaire {0,1}
-    m = (mask > 0).astype(np.uint8)
-
-    # Créer un calque rouge
-    overlay = np.zeros_like(img, dtype=np.uint8)
-
-    # Si l'image est BGR (OpenCV), on met rouge = (0,0,255)
-    # Si elle est RGB (matplotlib), c'est de toute façon proche visuellement
-    overlay[..., 2] = 255  # canal rouge
-
-    # Appliquer alpha blending uniquement où m == 1
-    img_float = img.astype(np.float32)
-    overlay_float = overlay.astype(np.float32)
-
-    img_float[m == 1] = (
-        (1 - alpha) * img_float[m == 1] +
-         alpha      * overlay_float[m == 1]
+    mask, error_map = detection_mask_from_offsets(
+        offsets,
+        dist_map,  
+        patch_r=4,
+        rho_m=4,
+        rho_e=6,
+        tau_error=300,        # On peut être large car le filtre de fréquence fera le tri
+        tau_disp=20,          # On ignore les petits mouvements de texture
+        min_size=500,
+        max_rmse=15,          # Tolérance couleur
+        min_global_count=300 # Il faut qu'au moins 1000 pixels (un bloc de 32x32) bougent pareil
     )
 
-    return img_float.astype(np.uint8)
+    mask = cv.dilate(mask, kernel=np.ones((11,11), dtype=np.uint8), iterations=1)
 
-# --- Overlay rouge sur l'image ---
-img_rgb = cv.cvtColor(img1, cv.COLOR_BGR2RGB)  # pour afficher avec matplotlib
+    # Visualisation de l'error map 
+    plt.figure()
+    plt.title("Error map")
+    plt.imshow(error_map, cmap="hot")
+    plt.colorbar()
 
-img_overlay = overlay_mask_on_image(img_rgb, mask, alpha=0.5)
+    # Visualisation du mask binaire
+    plt.figure()
+    plt.title("Mask de détection (binaire)")
+    plt.imshow(mask, cmap="gray")
+    plt.axis("off")
 
-plt.figure()
-plt.title("Detection Overlay ")
-plt.imshow(img_overlay)
-plt.axis("off")
-plt.show()
+    def overlay_mask_on_image(img, mask, alpha=0.5):
+        """
+        img  : image originale (BGR ou RGB)
+        mask : masque binaire uint8 (0 ou 255)
+        alpha: transparence du rouge (0.0 = rien, 1.0 = rouge opaque)
+        Retourne img_overlaid de même taille.
+        """
+
+        # S'assurer que mask est binaire {0,1}
+        m = (mask > 0).astype(np.uint8)
+
+        # Créer un calque rouge
+        overlay = np.zeros_like(img, dtype=np.uint8)
+
+        # Si l'image est BGR (OpenCV), on met rouge = (0,0,255)
+        # Si elle est RGB (matplotlib), c'est de toute façon proche visuellement
+        overlay[..., 2] = 255  # canal rouge
+
+        # Appliquer alpha blending uniquement où m == 1
+        img_float = img.astype(np.float32)
+        overlay_float = overlay.astype(np.float32)
+
+        img_float[m == 1] = (
+            (1 - alpha) * img_float[m == 1] +
+            alpha      * overlay_float[m == 1]
+        )
+
+        return img_float.astype(np.uint8)
+
+    # --- Overlay rouge sur l'image ---
+    img_rgb = cv.cvtColor(img1, cv.COLOR_BGR2RGB)  # pour afficher avec matplotlib
+
+    img_overlay = overlay_mask_on_image(img_rgb, mask, alpha=0.5)
+
+    plt.figure()
+    plt.title("Detection Overlay ")
+    plt.imshow(img_overlay)
+    plt.axis("off")
+    plt.show()
