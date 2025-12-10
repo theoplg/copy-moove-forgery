@@ -90,7 +90,7 @@ The algorithm iteratively refines the NNF through:
 
 To transform the raw (and often noisy) offset vector field into a clean, binary mask, we implemented a post-processing pipeline inspired by the work of T. Ehret.
 
-![Detection Pipeline](images/pipeline.png)
+![Detection Pipeline](project_root/input/pipeline.png)
 
 | Step | Purpose | Rationale |
 | :--- | :--- | :--- |
