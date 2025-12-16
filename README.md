@@ -7,8 +7,8 @@ Ensure you have **Python 3** installed.
 Clone the project to your local machine:
 
 ```bash
-git clone [https://github.com/y4sxk1n/IM01_PROJ.git](https://github.com/y4sxk1n/IM01_PROJ.git)
-cd IM01_PROJ
+git clone [https://github.com/theoplg/copy-moove-forgery.git](https://github.com/theoplg/copy-moove-forgery.git)
+cd copy-moove-forgery
 ```
 
 ### Installation
